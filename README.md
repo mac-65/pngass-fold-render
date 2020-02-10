@@ -8,10 +8,10 @@ The input text can be processed using some built-in functions, or <code>/bin/sed
 
 A typical WN from [Death March kara Hajimaru Isekai Kyousoukyoko, Volume 1, Chapter 1](https://www.sousetsuka.com/2015/01/death-march-kara-hajimaru-isekai.html)
 looks like --
-![sample](/SAMPLEs/Death_March_html_page.png)
+![sample](SAMPLEs/Death_March_html_page.png)
 <br>and with its text rendered on the PNG background image, look like
-<br>(the first image from <code>make demo</code>) --
-![sample](/SAMPLEs/p0001-rendered.jpg)
+<br>(a possible image from <code>make demo</code>) --
+![sample](SAMPLEs/p0001-rendered.jpg)
 
 The background image can be <i>anything</i>, but my favorite thing is to use a bunch of
 snapshots from the Anime series (if it has been adapted).
@@ -60,7 +60,7 @@ The rendered images are located in the folder <code>./JPGs</code>.
 
 ## High-level Overview of Some Built-in <code>pngass</code> Features
 ### Text re-formatting
-Some of the built-in features include adding two spaces after a sentence end, or converting 
+Some of the built-in features include adding two spaces after a sentence end, or converting
 quote-pairs to matching left-right quotes (single or double).
 <br>Example :arrow_right:
 
