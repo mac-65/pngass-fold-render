@@ -1,0 +1,15 @@
+﻿[Script Info]
+Title: Right Column Text
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: %d
+PlayResY: %d
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Top Right,%s,%d,&H00%s,&H000000FF,&H00F0F0F0,&H00000000,0,0,0,0,100,100,0,0,1,0,0,8,980,8,55,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.00,Top Right,,0000,0000,0000,,{\q1}{\an7}%s%.*s

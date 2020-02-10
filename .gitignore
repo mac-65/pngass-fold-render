@@ -1,0 +1,11 @@
+*.sw[pqr]
+*.o
+*.png
+FONTs
+TEXTs
+pngass
+pngass.dSYM
+html2text-1.3.2a
+html2text
+*.rpm
+JPGs
