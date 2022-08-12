@@ -103,13 +103,47 @@ ATTR_ERROR="${ATTR_RED_BOLD}ERROR -${ATTR_OFF}" ;
 ATTR_NOTE="${ATTR_OFF}`tput setaf 12`NOTE -${ATTR_OFF}";
 ATTR_TOOL="${ATTR_GREEN_BOLD}" ;
 
+G_TMP_FILE='' ;
+
+###############################################################################
+###############################################################################
+# Ctl-C, signals and exit handler stuff ...
+#
+stty -echoctl ; # hide '^C' on the terminal output
+exit_handler() {
+
+   /bin/rm -f "${G_TMP_FILE}" ;
+   echo 'EXITING' ;
+}
+
+sigint_handler() {
+   { set +x ; } >/dev/null 2>&1 ;
+
+   MY_REASON='ABORTED' ;
+   if [ $# -ne 0 ] ; then
+      MY_REASON="$1" ; shift ;
+   fi
+
+   exit_handler ;
+
+   tput setaf 1 ; tput bold ;
+   for yy in {01..03} ; do echo -n "${MY_REASON} BY USER  " ; done ;
+   echo ; tput sgr0 ;
+
+   exit 1 ;
+}
+trap 'sigint_handler' HUP INT QUIT TERM ; # Don't include 'EXIT' here...
+trap 'exit_handler' EXIT ;
+
+
 ###############################################################################
 # Required tools (many of these are probably installed by default):
 #  - ffmpeg
 #  - mkvtoolnix
-#  - sed
+#  - sed and pcre2
 #  - coreutils -- basename, cut, head, et. al.
 #  - grep, egrep
+#  - dos2unix
 #
 MY_SCRIPT="`basename \"$0\"`" ;
 DBG='.' ;
@@ -118,6 +152,8 @@ FFMPEG='/usr/local/bin/ffmpeg -y -nostdin -hide_banner' ;
 FFMPEG='ffmpeg -y -nostdin -hide_banner' ;
 MKVMERGE='/usr/bin/mkvmerge' ;
 MKVEXTRACT='/usr/bin/mkvextract' ;
+DOS2UNIX='/bin/dos2unix --force' ;
+SED='/usr/bin/sed' ;
 
 C_SCRIPT_NAME="$(basename "$0" '.sh')" ;
 
@@ -357,8 +393,10 @@ extract_fonts_in_video() {
       # Attachment IDs are NOT always sequential, so we need to capture each
       # attachment's ID.  Also, attachment names may have embedded SPACEs.
       #
-    local attachment_ID=`echo "${attachment_line}" | sed -e 's/Attachment ID \([0-9][0-9]*\):.*$/\1/'` ;
-    local attachment_file=`echo "${attachment_line}" | cut -d' ' -f 11- | sed -e "s/'//g"` ;
+    local attachment_ID=`echo "${attachment_line}" \
+                        | $SED -e 's/Attachment ID \([0-9][0-9]*\):.*$/\1/'` ;
+    local attachment_file=`echo "${attachment_line}" \
+                        | cut -d' ' -f 11- | $SED -e "s/'//g"` ;
 
     local font_pathname="${attachments_dir}/${attachment_file}" ;
 
@@ -367,7 +405,7 @@ extract_fonts_in_video() {
       MSG="`mkvextract attachments \"${in_video}\" \"${attachment_ID}:${font_pathname}\"`" ;
       if [ $? -eq 0 ] ; then
         echo    "${MSG}" \
-          | sed -e "s/.*is written to \(.*\).$/${pad_spaces}<< ${ATTR_BLUE_BOLD}EXTRACTING ${ATTR_CLR_BOLD}${attachment_ID}:${attachment_file}${ATTR_OFF} to ${ATTR_CYAN_BOLD}\1${ATTR_OFF}. >>/" ;
+          | $SED -e "s/.*is written to \(.*\).$/${pad_spaces}<< ${ATTR_BLUE_BOLD}EXTRACTING ${ATTR_CLR_BOLD}${attachment_ID}:${attachment_file}${ATTR_OFF} to ${ATTR_CYAN_BOLD}\1${ATTR_OFF}. >>/" ;
       else
         ERR_MKVMERGE=1;
         MSG="`echo -n \"${MSG}\" | tail -1 | cut -d' ' -f2-`" ;
@@ -440,7 +478,7 @@ extract_video_subtitle() {  # "${G_IN_FILE}"
                                | head -1 \
                                | while read track_line ; do
     local track_ID=`echo "${track_line}" \
-      | sed -e 's/Track ID \([0-9][0-9]*\):.*$/\1/'` ;
+      | $SED -e 's/Track ID \([0-9][0-9]*\):.*$/\1/'` ;
 
       #########################################################################
       # We don't need to echo out the subtitle's save directory. [sic]
@@ -515,45 +553,81 @@ apply_script_to_srt_subtitles() {  # input_pathname  output_pathname
   HS_SED_SCRIPT_ARRAY=(
     '^Format: Name,.*'
       'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding <==> Style: Default Italic,Open Sans Semibold,44,&H30FF00DD,&H000000FF,&H00101010,&H20A0A0A0,0,1,0,0,100,100,0,0,1,2.2,2,2,105,105,11,1'
+      #########################################################################
+      # Normally, these are already specified correctly for an 'ASS' subtitle.
+      # These are here for the cases where ffmpeg is used to convert a 'SRT'
+      # subtitle to an 'ASS' subtitle where the default value ffmpeg chooses
+      # is incorrect for the video that is being encoded.
+      #
+    '^PlayResX:.*'
+        'PlayResX: 848'   # Note - differences for PlayResX / PlayResY affect
+    '^PlayResY:.*'        #        the Fontsize and Outline values, and the
+        'PlayResY: 480'   #        drawing position of items in each frame.
+    'Style: Default,.*'
+        'Style: Default,Open Sans Semibold,39,&H6000F8FF,&H000000FF,&H00101010,&H50A0A0A0,-1,0,0,0,100,100,0,0,1,2.75,0,2,100,100,12,1'
+      #########################################################################
+      # - Note that the necessary _replacement_ escapes are added by the MAIN
+      #   script, i.e., the '&' character does not need to be and should NOT
+      #   be escaped in the replacement part.
+      # - Because some libass directives are preceeded by a '\' character, e.g.
+      #   '{\pos(13,80)}'.  This makes using the '\' character a little tricky
+      #   Consider the following sed script pair (from a converted SRT file):
+      #
+    '^Dialogue: \(.*\),Default,\(.*\),{\\i1}\(.*\){\\i[0]*}$'
+        'Dialogue: %%%1,Default Italic,%%%2,%%%3'
+      #
+      #   Its purpose is to detect a line that is all italic, and select a
+      #   different style for that Dialogue line keeping everything else the
+      #   same.  In this case, the \1, \2, and \3 capture buffer specifiers
+      #   are represented as %%%1, %%%2, and %%%3 in the replacement string.
+      #   Ugly, I know.
   ) ;
 
-  ###-del /bin/cp "${ASS_SRC}" "${ASS_DST}" ;
   # https://unix.stackexchange.com/questions/181937/how-create-a-temporary-file-in-shell-script
-  TMPFILE="$(mktemp /tmp/${C_SCRIPT_NAME}.XXXXXX)" ;
-  exec 3>"${TMPFILE}" ;
-  exec 4<"${TMPFILE}" ;
-  /bin/rm -f "${TMPFILE}" ;
+  G_TMP_FILE="$(mktemp "/tmp/${C_SCRIPT_NAME}-sed.XXXXXX")" ;
+# exec 3>"${G_TMP_FILE}" ;
+# exec 4<"${G_TMP_FILE}" ;
+# /bin/rm -f "${G_TMP_FILE}" ;
 
-  exit ; # HERE HERE
-
+  local ido=0 ;
   local idx=0 ;
+
   while [ "${HS_SED_SCRIPT_ARRAY[$idx]}" != '' ] ; do  # {
 
     (( ido = (idx / 2) + 1 )) ; # A temp for displaying the regex index
     echo -n "${ATTR_BROWN_BOLD}${ido}${ATTR_OFF}." ;
-    exit
 
-            /bin/mv "${HS_WORKING_BASENAME}.ass" "${HS_WORKING_BASENAME}-X${idx}.ass" ;
-            (( ido = idx + 1 )) ;
+    (( ido = idx + 1 )) ;
 
-              #################################################################
-              # Insane shell escape sequences - also, the sed '-e' ordering is
-              # important.  This is because some .ASS directives are preceeded
-              # by a '\', e.g. {\pos(13,80)}.  regex captures are complicated
-              # to code - I ended up using '%%%' as the '\' character.
-            echo -n '.' ;
-            ASS_REPL_STR=`echo "${HS_SED_SCRIPT_ARRAY[$ido]}" \
-                | /bin/sed -e 's#\\\#\\\\\\\#g'   \
-                           -e 's/,&H/,\\\\\&H/g'  \
-                           -e 's/ <==> /\\\\n/g'  \
-                           -e 's/%%%/\\\/g'
+      #########################################################################
+      # Insane shell escape sequences - also, the sed '-e' ordering is
+      # important.  This is because some .ASS directives are preceeded by a
+      # '\', e.g. {\pos(13,80)}.  Also, regex captures are complicated to code
+      # -- I ended up using '%%%' to represent the '\' character.
+      #
+    echo -n '.' ;
+    REPLACEMENT_STR=`echo "${HS_SED_SCRIPT_ARRAY[$ido]}" \
+                | $SED -e 's#\\\#\\\\\\\#g'   \
+                       -e 's/,&H/,\\\\\&H/g'  \
+                       -e 's/ <==> /\\\\n/g'  \
+                       -e 's/%%%/\\\/g'
                  `;
-            echo -n '. ' ;
-            cat "${HS_WORKING_BASENAME}-X${idx}.ass"  \
-                | sed -e "s#${HS_SED_SCRIPT_ARRAY[$idx]}#${ASS_REPL_STR}#" > "${HS_WORKING_BASENAME}.ass" ;
-            ${ASS_DBG} /bin/rm -f "${HS_WORKING_BASENAME}-X${idx}.ass" ;
-            (( idx += 2 )) ;
-        done  # }
+    echo -n '. ' ;
+
+    echo "s#${HS_SED_SCRIPT_ARRAY[$idx]}#${REPLACEMENT_STR}#" \
+      >> "${G_TMP_FILE}" ;
+    (( idx += 2 )) ;
+  done  # }
+
+  #############################################################################
+  # Note, if you want to use '--regexp-extended' then some of the expressions
+  # need to be redone because of the syntax difference between the two modes.
+  # It just might be better to include another sed script here instead.
+  #
+  cat "${ASS_SRC}" \
+      | ${DOS2UNIX}  \
+      | $SED "--file=${G_TMP_FILE}" \
+    > "${ASS_DST}" ;
 }
 
 
@@ -633,9 +707,8 @@ if [ "${G_OPTION_NO_SUBS}" != 'y' ] ; then  # {
     # too many results for any search terms I can think of to see if it's even
     # been identified as a bug.
     #
-    set -x
     if [ "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.srt" -nt "${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ] ; then  # {
-      echo "${ATTR_YELLOW_BOLD}FOUND AN SRT SUBTITLE$(tput sgr0)" ;
+      echo -n "${ATTR_YELLOW_BOLD}FOUND AN SRT SUBTITLE$(tput sgr0).." ;
         # TODO :: convert the subtitle into a temp location, then perform any SED
         #         conversion(s) before putting the completed subtitle in the
         # HERE    C_SUBTITLE_OUT_DIR location.
@@ -643,6 +716,7 @@ if [ "${G_OPTION_NO_SUBS}" != 'y' ] ; then  # {
       ${FFMPEG} -i "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.srt" \
                    "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass" \
           >/dev/null 2>&1 ; RC=$? ;
+      echo -n '. ' ;
       if [ ${RC} -ne 0 ] ; then
         { set +x ; } >/dev/null 2>&1
         echo -n "${ATTR_ERROR} ${FFMPEG} -i " ;
@@ -669,8 +743,6 @@ else  # }{
 fi  # }
 
 
-exit 0 ; # DEBUG
-
 ${DBG} ${MKVMERGE} -i "${G_IN_FILE}" | grep -q 'subtitles' ; RC=$? ;
 if [ ${RC} -eq 0 ] ; then  # {
 
@@ -687,7 +759,6 @@ elif [ ! -s "${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ] ; then  # }{
   # If there's a subtitle file in the same directory as the source, we'll add
   # that to the encoding __after__ converting it to an ASS subtitle file.
   #
-  set -x
   if [ -s "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.srt" ] ; then
     echo 'FOUND A SRT SUBTITLE' ;
     # TODO :: convert the subtitle into a temp location, then perform any SED
@@ -701,7 +772,6 @@ elif [ ! -s "${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ] ; then  # }{
   fi
 fi  # }
 
-exit ; ##### DEBUG
 
 ###############################################################################
 # Welcome to the wonderful world of shell escape!  Pretty sure no personal
@@ -710,31 +780,31 @@ exit ; ##### DEBUG
 #
 # There might be a cleaner/cleverer way to do this, but darn if I know how to!
 #
-if [ "${G_SUBTITLE_PATHNAME}" = '' ] ; then
+if [ "${G_SUBTITLE_PATHNAME}" = '' ] ; then  # {
   if [ "${C_VIDEO_FILTERS}" = '' ] ; then
     eval set -- ; # Make an EMPTY eval just to keep the code simple ...
   else
     C_FFMPEG_VIDEO_FILTERS="`echo "${C_VIDEO_FILTERS}" \
-                             | sed -e 's#\([ :()[]\)#\\\\\\\\\\\\\1#g' \
-                                   -e 's#]#\\\\\\\\\\\\\]#g'`" ;
+                           | $SED -e 's#\([ :()[]\)#\\\\\\\\\\\\\1#g' \
+                                  -e 's#]#\\\\\\\\\\\\\]#g'`" ;
     eval set -- "'-vf' ${C_FFMPEG_VIDEO_FILTERS}" ;
   fi
 else
   G_FFMPEG_SUBTITLE_FILENAME="`echo "${G_SUBTITLE_PATHNAME}" \
-                             | sed -e 's#\([ :,()[]\)#\\\\\\\\\\\\\1#g' \
-                                   -e 's#]#\\\\\\\\\\\\\]#g'`" ;
+                             | $SED -e 's#\([ :,()[]\)#\\\\\\\\\\\\\1#g' \
+                                    -e 's#]#\\\\\\\\\\\\\]#g'`" ;
   G_FFMPEG_FONTS_DIR="`echo "${C_FONTS_DIR}" \
-                             | sed -e 's#\([ :,()[]\)#\\\\\\\\\\\\\1#g' \
-                                   -e 's#]#\\\\\\\\\\\\\]#g'`" ;
+                     | $SED -e 's#\([ :,()[]\)#\\\\\\\\\\\\\1#g' \
+                            -e 's#]#\\\\\\\\\\\\\]#g'`" ;
   if [ "${C_VIDEO_FILTERS}" = '' ] ; then
     eval set -- "'-vf' subtitles=${G_FFMPEG_SUBTITLE_FILENAME}:fontsdir=${G_FFMPEG_FONTS_DIR}" ;
   else
     C_FFMPEG_VIDEO_FILTERS="`echo "${C_VIDEO_FILTERS}" \
-                             | sed -e 's#\([ :()[]\)#\\\\\\\\\\\\\1#g' \
-                                   -e 's#]#\\\\\\\\\\\\\]#g'`" ;
+                           | $SED -e 's#\([ :()[]\)#\\\\\\\\\\\\\1#g' \
+                                  -e 's#]#\\\\\\\\\\\\\]#g'`" ;
     eval set -- "'-vf' ${C_FFMPEG_VIDEO_FILTERS},subtitles=${G_FFMPEG_SUBTITLE_FILENAME}:fontsdir=${G_FFMPEG_FONTS_DIR}" ;
   fi
-fi
+fi  # }
 
 
 ###############################################################################
@@ -742,7 +812,7 @@ fi
 if [ ! -s "${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ] ; then
 
   if [ "${G_METADATA_TITLE}" = '' ] ; then
-    G_METADATA_TITLE="$(echo "${G_IN_BASENAME}" | sed -e 's/[_+]/ /g')" ;
+    G_METADATA_TITLE="$(echo "${G_IN_BASENAME}" | $SED -e 's/[_+]/ /g')" ;
   fi
 
   #############################################################################
@@ -752,12 +822,12 @@ if [ ! -s "${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ] ; then
     C_METADATA_COMMENT="`cat <<HERE_DOC
 Encoded on $(date)
 $(uname -sr ; ffmpeg -version | egrep '^ffmpeg ')
-${FFMPEG} -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K -c:v libx264 -preset ${C_FFMPEG_PRESET} -crf ${C_FFMPEG_CRF} -tune film -profile:v high -level 4.1 -pix_fmt yuv420p $(echo $@ | sed -e 's/[\\]//g' -e "s#${HOME}#\\\${HOME}#g") '${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}'
+${FFMPEG} -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K -c:v libx264 -preset ${C_FFMPEG_PRESET} -crf ${C_FFMPEG_CRF} -tune film -profile:v high -level 4.1 -pix_fmt yuv420p $(echo $@ | $SED -e 's/[\\]//g' -e "s#${HOME}#\\\${HOME}#g") '${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}'
 HERE_DOC
 `" ;
   fi
 
-  set -x ;
+  set -x ; # We want to KEEP this enabled.
   ${DBG} ${FFMPEG} -i "${G_IN_FILE}" \
                    -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K \
                    -c:v libx264 -preset ${C_FFMPEG_PRESET} \
