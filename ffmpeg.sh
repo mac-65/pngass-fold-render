@@ -112,7 +112,7 @@ G_TMP_FILE='' ;
 stty -echoctl ; # hide '^C' on the terminal output
 exit_handler() {
 
-   /bin/rm -f "${G_TMP_FILE}" ;
+   [ "${G_OPTION_DEBUG}" = '' ] && /bin/rm -f "${G_TMP_FILE}" ;
    echo 'EXITING' ;
 }
 
@@ -140,9 +140,10 @@ trap 'exit_handler' EXIT ;
 # Required tools (many of these are probably installed by default):
 #  - ffmpeg
 #  - mkvtoolnix
-#  - sed and pcre2
+#  - sed and pcre2 (the library)
 #  - coreutils -- basename, cut, head, et. al.
 #  - grep, egrep
+#  - jq, tested with version 1.6
 #  - dos2unix
 #
 MY_SCRIPT="`basename \"$0\"`" ;
@@ -179,6 +180,8 @@ G_OPTION_NO_MODIFY_ASS='' ;     # TODO write_me + getopt
 G_OPTION_ASS_SCRIPT=''    ;     # TODO write_me + getopt
 G_OPTION_VERBOSE='' ;           # set to 'y' if '--verbose' is specified to
                                 # display a little bit more status of the run
+G_OPTION_DEBUG='' ;             # set to 'y' if '--debug' is specified to
+                                # preserve some temporary files, etc.
 C_VIDEO_OUT_DIR='OUT DIR' ;     # the re-encoded video's save location
 C_SUBTITLE_IN_DIR='IN SUBs' ;   # location for manually added subtitles
 
@@ -296,6 +299,7 @@ fi
 #
 HS_OPTIONS=`getopt -o h::vc:f:yt:q: \
     --long help::,verbose,config:,fonts-dir:,copy-to:,quality:,\
+debug,\
 no-subs,\
 no-modify-srt \
     -n "${ATTR_ERROR} ${ATTR_BLUE_BOLD}${MY_SCRIPT}${ATTR_YELLOW}" -- "$@"` ;
@@ -321,6 +325,9 @@ while true ; do  # {
 #   ;;
 # --mux-subs)   # If there are subtitles, then also MUX them into the video
 #   ;;
+  --debug)
+    G_OPTION_DEBUG='y' ; shift ;
+    ;;
   -v|--verbose)
     G_OPTION_VERBOSE='y' ; shift ;
     ;;
@@ -575,10 +582,11 @@ apply_script_to_srt_subtitles() {  # input_pathname  output_pathname
       # subtitle to an 'ASS' subtitle where the default value ffmpeg chooses
       # is incorrect for the video that is being encoded.
       #
-    '^PlayResX:.*'
-        'PlayResX: 848'   # Note - differences for PlayResX / PlayResY affect
-    '^PlayResY:.*'        #        the Fontsize and Outline values, and the
-        'PlayResY: 480'   #        drawing position of items in each frame.
+    '^PlayResX:.*'       # Note - differences for PlayResX / PlayResY affect
+        'PlayResX: 848'  #        the Fontsize and Outline values, and the
+    '^PlayResY:.*'       #        drawing position of items in each frame.
+        'PlayResY: 480'
+
     'Style: Default,.*'
         'Style: Default,Open Sans Semibold,39,&H6000F8FF,&H000000FF,&H00101010,&H50A0A0A0,-1,0,0,0,100,100,0,0,1,2.75,0,2,100,100,12,1'
       #########################################################################
@@ -638,7 +646,7 @@ apply_script_to_srt_subtitles() {  # input_pathname  output_pathname
   #############################################################################
   # Note, if you want to use '--regexp-extended' then some of the expressions
   # need to be redone because of the syntax difference between the two modes.
-  # It just might be better to include another sed script here instead.
+  # It just might be simpler to include another sed script here instead.
   #
   echo -n 'DOS..'
   cat "${ASS_SRC}"  \
@@ -665,13 +673,14 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
   local ASS_SCRIPT="$1" ; shift ; # If = '', then we'll use a "default"
 
   if [ "${L_SKIP_OPTION}" = 'y' ] ; then
-    echo 'SKIPPING SED EDITS ON SRT SUBTITLE' ;
+    echo 'SKIPPING SED EDITS ON ASS SUBTITLE' ;
     /bin/cp "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
     return ;
   fi
 
-  /bin/cp "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
-  return ;
+  ## DBG
+##--del  /bin/cp "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
+##--del  return ;
 
   #############################################################################
   # There might be better / more elegant ways to do this ...
@@ -693,35 +702,78 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
   #
   SED_SCRIPT_ARRAY=(
     '^Format: Name,.*'
-      'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding <==> Style: Default Italic,Open Sans Semibold,39,&H30FF00DD,&H000000FF,&H00101010,&H20A0A0A0,0,1,0,0,100,100,0,0,1,2.2,0,2,105,105,11,1'
-      #########################################################################
-      # Normally, these are already specified correctly for an 'ASS' subtitle.
-      # These are here for the cases where ffmpeg is used to convert a 'SRT'
-      # subtitle to an 'ASS' subtitle where the default value ffmpeg chooses
-      # is incorrect for the video that is being encoded.
-      #
-    '^PlayResX:.*'
-        'PlayResX: 848'   # Note - differences for PlayResX / PlayResY affect
-    '^PlayResY:.*'        #        the Fontsize and Outline values, and the
-        'PlayResY: 480'   #        drawing position of items in each frame.
-    'Style: Default,.*'
-        'Style: Default,Open Sans Semibold,39,&H6000F8FF,&H000000FF,&H00101010,&H50A0A0A0,-1,0,0,0,100,100,0,0,1,2.75,0,2,100,100,12,1'
-      #########################################################################
-      # - Note that the necessary _replacement_ escapes are added by the MAIN
-      #   script, i.e., the '&' character does not need to be and should NOT
-      #   be escaped in the replacement part.
-      # - Because some libass directives are preceeded by a '\' character, e.g.
-      #   '{\pos(13,80)}'.  This makes using the '\' character a little tricky
-      #   Consider the following sed script pair (from a converted SRT file):
-      #
-    '^Dialogue: \(.*\),Default,\(.*\),{\\i1}\(.*\){\\i[0]*}$'
-        'Dialogue: %%%1,Default Italic,%%%2,%%%3'
-      #
-      #   Its purpose is to detect a line that is all italic, and select a
-      #   different style for that Dialogue line keeping everything else the
-      #   same.  In this case, the \1, \2, and \3 capture buffer specifiers
-      #   are represented as %%%1, %%%2, and %%%3 in the replacement string.
-      #   Ugly, I know.
+      'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding'
+
+    ###########################################################################
+    # Here are a few common ‘Default’ ASS subtitle styles ...
+    #
+    '^Style: Default,Roboto Medium,.*'
+       'Style: Default,Roboto Medium,24,&H4820FAFF,&H000000FF,&H13102810,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,2,100,100,14,0'
+    '^Style: Default,Fontin Sans Rg,.*'
+       'Style: Default,Fontin Sans Rg,46,&H30EBEFF6,&H000000FF,&H10091A04,&HBE000000,-1,0,0,0,100,100,0,0,1,2.4,1,2,90,90,14,1'
+    '^Style: Default,Open Sans Semibold,.*'
+       'Style: Default,Open Sans Semibold,45,&H4820FAFF,&H000000FF,&H00020713,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,2,80,80,13,1'
+
+    ###########################################################################
+    # These are some common additional stylizations ...
+    #
+    '^Style: main,.*'
+          'Style: main,Open Sans Semibold,28,&H58DCECEC,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,2,100,100,11,0'
+    '^Style: Main,.*'
+          'Style: Main,Open Sans Semibold,28,&H58DCECEC,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,2,100,100,11,0'
+
+    '^Style: Main - Top,.*'
+          'Style: Main - Top,Open Sans Semibold,28,&H5820F0F2,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,0'
+    '^Style: Main Top,.*'
+          'Style: Main Top,Open Sans Semibold,28,&H5820F0F2,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,0'
+    '^Style: Top,.*'
+          'Style: Top,Open Sans Semibold,28,&H5820F0F2,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,0'
+    '^Style: Default - Top,.*'
+          'Style: Default - Top,Open Sans Semibold,28,&H5820F0F2,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,0'
+    '^Style: top,.*'
+          'Style: top,Open Sans Semibold,28,&H5820F0F2,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,0'
+    '^Style: On Top,.*'
+          'Style: On Top,Open Sans Semibold,28,&H5820F0F2,&H000000FF,&H08101008,&H00000000,-1,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,0'
+
+    '^Style: italics,.*'
+       'Style: italics,Open Sans Semibold,28,&H48FF9B6C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,2,100,100,11,1'
+    '^Style: Italics,.*'
+       'Style: Italics,Open Sans Semibold,28,&H48FF9B6C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,2,100,100,11,1'
+
+    '^Style: Italics_top,.*'
+       'Style: Italics_top,Open Sans Semibold,28,&H42FFA27C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: Italics - Top,.*'
+       'Style: Italics - Top,Open Sans Semibold,28,&H42FFA27C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: Italics Top,.*'
+       'Style: Italics Top,Open Sans Semibold,28,&H42FFA27C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: Top Italics,.*'
+       'Style: Top Italics,Open Sans Semibold,28,&H42FFA27C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: italicstop,.*'
+       'Style: italicstop,Open Sans Semibold,28,&H42FFA27C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: On Top Italics,.*'
+       'Style: On Top Italics,Open Sans Semibold,27,&H42FFA27C,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+
+    '^Style: flashback,.*'
+     'Style: flashback,Open Sans Semibold,28,&H6000F8FF,&H000000FF,&H08101008,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,2,100,100,11,1'
+    '^Style: Flashback,.*'
+     'Style: Flashback,Open Sans Semibold,28,&H6000F8FF,&H000000FF,&H08101008,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,2,100,100,11,1'
+
+    '^Style: Flashback - Top,.*'
+     'Style: Flashback - Top,Open Sans Semibold,28,&H4000F8FF,&H000000FF,&H08101008,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: flashbacktop,.*'
+     'Style: flashbacktop,Open Sans Semibold,28,&H4000F8FF,&H000000FF,&H08101008,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: Flashback Top,.*'
+     'Style: Flashback Top,Open Sans Semibold,28,&H4000F8FF,&H000000FF,&H08101008,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,8,100,100,11,1'
+    '^Style: Flashback_Italics,.*'
+     'Style: Flashback_Italics,Open Sans Semibold,28,&H4000F8FF,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,2,100,100,11,1'
+    '^Style: flashback italics,.*'
+     'Style: flashback italics,Open Sans Semibold,28,&H4000F8FF,&H000000FF,&H08101008,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,2,100,100,11,1'
+
+    '^Style: Overlap/Flashback,.*'
+     'Style: Overlap/Flashback,Open Sans Semibold,28,&H45F2E6F2,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,2,20,20,11,1'
+
+    '^Style: Narration,.*'
+     '^Style: Narration,Open Sans Semibold,28,&H38F0F0F0,&H000000FF,&H00000000,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,20,20,11,1'
   ) ;
 
   # https://unix.stackexchange.com/questions/181937/how-create-a-temporary-file-in-shell-script
@@ -903,17 +955,44 @@ if [ "${G_OPTION_NO_SUBS}" != 'y' ] ; then  # {
           "${G_OPTION_ASS_SCRIPT}" ;
   else  # }{
     #############################################################################
-    # We have subtitles in this video, so let's see if there are any font
-    # attachments in the video.  If there are, then extract those fonts to the
-    # fonts' directory (in 'C_FONTS_DIR') to provide visibility to ffmpeg.
+    # Check to see if there are subtitles attached to this video.
+    # FIXME :: Right now, we only handle ASS subtitles and assume the first one
+    #          is the subtitle to use.  Good video packagers will have it set up
+    #          this way, but there are the odd videos (usually older encodes)
+    #          where the first subtitle is not the preferred subtitle to use for
+    #          the video's re-encoding.
     #
-    ${DBG} ${MKVMERGE} -i "${G_IN_FILE}" | grep -q 'subtitles' ; RC=$? ;
-    if [ ${RC} -eq 0 ] ; then  # { OKAY
+    # We use ‘mkvmerge’ and ‘jq’ to parse out the video's track IDs.  The status
+    # of the ‘grep’ at the end of the pipeline will tell if there is a subtitle.
+    # TODO :: Add a switch to specify the regex to use get the desired track ID.
+    #         This would replace the default regex “'subtitles' 'S_TEXT/ASS'”.
+    #
+    # There are probably better ways to do this, but this works pretty well.
+    # ls ; read MKV_FILE ; mkvmerge -i -F json "${MKV_FILE}" | jq '.tracks[]' | jq -r '[.id, .type, .properties.codec_id, .properties.track_name, .properties.language]|@sh' | grep "'subtitles' 'S_TEXT/ASS'"
+
+    # - 3 'subtitles' 'S_TEXT/ASS' 'Description' 'eng'
+    # - 3 'subtitles' 'S_TEXT/ASS' 'English Translation - With Effect' 'eng'
+    # - 3 'subtitles' 'S_TEXT/ASS' 'With Effect' 'eng'
+    #   4 'subtitles' 'S_TEXT/ASS' 'Without Effect' 'eng'
+
+    # so let's see if there are any font
+    # attachment(s) in the video.  If there are, then extract those fonts to
+    # the fonts' directory (in 'C_FONTS_DIR') to provide visibility to ffmpeg.
+    #
+    ###- original way ${MKVMERGE} -i "${G_IN_FILE}" | grep -iq 'substationalpha' ; RC=$? ;
+
+    ${MKVMERGE} -i -F json "${G_IN_FILE}" \
+        | jq '.tracks[]' \
+        | jq -r '[.id, .type, .properties.codec_id, .properties.track_name, .properties.language]|@sh' \
+        | grep "'subtitles' 'S_TEXT/ASS'"
+    if [ ${RC} -eq 0 ] ; then  # { OKAY  HERE-HERE
 
       vecho "${ATTR_YELLOW_BOLD}  SUBTITLE FOUND IN VIDEO$(tput sgr0) ..." ;
 
       extract_fonts_in_video "${G_IN_FILE}" "${C_FONTS_DIR}" ;
-      extract_video_subtitle "${G_IN_FILE}" ;
+
+      extract_video_subtitle "${G_IN_FILE}" \
+          "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass"
     fi  # }
   fi  # }
 else  # }{
