@@ -29,12 +29,15 @@ fi
 
 
 ###############################################################################
-# TODO:
+# NOTE + TODO:
 # - option to copy the audio track instead of re-encoding it as MP3
 # - option to copy the video track instead of re-encoding it, or re-encode
 #   the video track as something different.  For some reason, some recodes
 #   don't play well on the Samsung but I can't see the different in VLC, e.g.
 #   "/avm1/NO_RSYNC/MVs/3 Doors Down - It's Not My Time (CrawDad).mpg".
+#
+# https://askubuntu.com/questions/366103/saving-more-corsor-positions-with-tput-in-bash-terminal
+#   Interesting way to capture the cursor position.
 #
 
 
@@ -112,7 +115,9 @@ G_TMP_FILE='' ;
 stty -echoctl ; # hide '^C' on the terminal output
 exit_handler() {
 
-   [ "${G_OPTION_DEBUG}" = '' ] && /bin/rm -f "${G_TMP_FILE}" ;
+   [ "${G_OPTION_DEBUG}" = '' ] \
+       && [ -f "${G_TMP_FILE}" ] \
+       && /bin/rm -f "${G_TMP_FILE}" ;
    echo 'EXITING' ;
 }
 
@@ -143,7 +148,7 @@ trap 'exit_handler' EXIT ;
 #  - sed and pcre2 (the library)
 #  - coreutils -- basename, cut, head, et. al.
 #  - grep, egrep
-#  - jq, tested with version 1.6
+#  - jq  (developed and tested with version 1.6)
 #  - dos2unix
 #
 MY_SCRIPT="`basename \"$0\"`" ;
@@ -155,6 +160,8 @@ MKVMERGE='/usr/bin/mkvmerge' ;
 MKVEXTRACT='/usr/bin/mkvextract' ;
 DOS2UNIX='/bin/dos2unix --force' ;
 SED='/usr/bin/sed' ;
+CP='/usr/bin/cp' ;
+FOLD='/usr/bin/fold' ;
 
 C_SCRIPT_NAME="$(basename "$0" '.sh')" ;
 
@@ -164,8 +171,8 @@ C_SCRIPT_NAME="$(basename "$0" '.sh')" ;
 # (e.g. my TV can't playback FLAC audio or h265 video streams).
 #
 C_FFMPEG_CRF=20 ;
-C_FFMPEG_PRESET='veryfast' ;    # Fast, used for batch script testing
 C_FFMPEG_PRESET='veryslow' ;    # Good quality w/good compression
+C_FFMPEG_PRESET='veryfast' ;    # Fast, used for batch script testing
 C_FFMPEG_MP3_BITS=320 ;         # We'll convert the audio track to MP3
 C_SUBTITLE_OUT_DIR='./SUBs' ;   # Where to save the extracted subtitle
 C_FONTS_DIR="${HOME}/.fonts" ;  # Where to save the font attachments
@@ -391,10 +398,10 @@ fi
 #
 # NOTE -- NO FONT will ever be overwritten by this function.
 #
-extract_fonts_in_video() {
+extract_font_attachments() {
 
   local in_video="$1" ; shift ;
-  local attachments_dir="$1" ; shift ; # Destination directory for each font attachment
+  local attachments_dir="$1" ; shift ; # save location for the font attachments
 
   echo    "  ${ATTR_BOLD}GETTING FONTS FOR VIDEO " ;
 
@@ -429,7 +436,8 @@ extract_fonts_in_video() {
       MSG="`mkvextract attachments \"${in_video}\" \"${attachment_ID}:${font_pathname}\"`" ;
       if [ $? -eq 0 ] ; then
         echo    "${MSG}" \
-          | ${SED} -e "s/.*is written to \(.*\).$/${pad_spaces}<< ${ATTR_BLUE_BOLD}EXTRACTING ${ATTR_CLR_BOLD}${attachment_ID}:${attachment_file}${ATTR_OFF} to ${ATTR_CYAN_BOLD}\1${ATTR_OFF}. >>/" ;
+          | ${SED} -e "s/.*is written to \(.*\).$/${pad_spaces}<< ${ATTR_BLUE_BOLD}EXTRACTING ${ATTR_CLR_BOLD}${attachment_ID}:${attachment_file}${ATTR_OFF} to ${ATTR_CYAN_BOLD}\1${ATTR_OFF}. >>/" \
+          | ${SED} -e "s#${HOME}#\\\${HOME}#g" ;
       else
         ERR_MKVMERGE=1;
         MSG="`echo -n \"${MSG}\" | tail -1 | cut -d' ' -f2-`" ;
@@ -468,6 +476,7 @@ extract_fonts_in_video() {
       #########################################################################
       # I have seen videos (although rare) that contain a subtitle track, but
       # do not have the referenced font(s) in the subtitle as attachments.
+      # ffmpeg will not "see" this and it seems libass won't indicate the loss.
       # It's hard to tell how these subtitles will render (either nothing at
       # all or libass will perform a font substitution with lackluster results,
       # or the font is already installed on the system and is rendered fine).
@@ -482,56 +491,28 @@ extract_fonts_in_video() {
 
 ###############################################################################
 ###############################################################################
-# extract_video_subtitle( G_IN_FILE )
-# - Extracts the 1st subtitle file from the video and saves it in the current
-#   directory.
-# - Sets 'G_SUBTITLE_PATHNAME' with the subtitle filename suitable to pass to
-#   ffmpeg (i.e., special characters to ffmpeg are properly escaped).
+# extract_subtitle_track()
 #
-extract_video_subtitle() {  # "${G_IN_FILE}"
+# Extract the subtitle specified by the 'subtitle_track' argument and save it
+# to 'save_to_file'.  The subtile can be an ASS or SRT subtitle.
+#
+# Note, this is only called to perform an initial extraction.  If the subtitle
+# is already in 'save_to_file', an different code path is take and this
+# function is not called.
+#
+extract_subtitle_track() {
   local in_video="$1" ; shift ;
+  local save_to_file="$1" ; shift ;
+  local subtitle_track="$1" ; shift ;
 
-  #############################################################################
-  # I assume that if a music video has a subtitle track, then the subtitle is
-  # stylizied for the music and would NOT be a SRT or PGS subtitle.
-  # Assumptions made in this section:
-  # - the subtitle is Advanced SubStation Alpha (ASS) format; and
-  # - we'll hardsub the first subtitle track in the video.
-  #
-  ${MKVMERGE} -i "${in_video}" | egrep 'subtitles' \
-                               | head -1 \
-                               | while read track_line ; do
-    local track_ID=`echo "${track_line}" \
-      | ${SED} -e 's/Track ID \([0-9][0-9]*\):.*$/\1/'` ;
 
-      #########################################################################
-      # We don't need to echo out the subtitle's save directory. [sic]
-      #
-      # Also, we won't overwrite the ASS file if it's already there.  This
-      # allows the user to tweak the subtitle file and re-encode the video
-      # using the tweaked version by removing the old re-encoded video and
-      # rerunning the script.
-      # TODO :: If there's an executable script with the same basename as the
-      #         ASS file, then execute that script.  This would ONLY be run
-      #         after the initial extraction of the subtitle file.
-      #
-    echo -n "  ${ATTR_CYAN_BOLD}Subtitle Track ${ATTR_CLR_BOLD}${track_ID}:" ;
-    echo    "${ATTR_YELLOW}${G_IN_BASENAME}.ass ${ATTR_OFF}..." ;
+  local track_ID=`echo "${subtitle_track}" | cut -f1 -d' '` ;
 
-    if [ ! -s "${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ] ; then
-      ${MKVEXTRACT} tracks "${in_video}" \
-             "${track_ID}:${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" \
-        >/dev/null 2>&1 ;
-    fi
+  echo -n "   ${ATTR_CYAN_BOLD}Track ${ATTR_CLR_BOLD}${track_ID} ==> " ;
+  echo    "${ATTR_YELLOW}'$(basename "${save_to_file}")' ${ATTR_OFF}..." ;
 
-      #########################################################################
-      # Nuttin's easy department, part 2 -- A colon/comma in the subtitle's
-      # filename needs to be double-escaped and its filename __should__ be
-      # prepended with './', e.g.  -vf 'subtitles=./Re\\\: Zero-01.ass:...'
-      # (TODO - don't know if special handling is needed for a single quote.)
-      #
-    G_SUBTITLE_PATHNAME="${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ;
-  done
+  ${MKVEXTRACT} tracks "${in_video}" "${track_ID}:${save_to_file}" \
+    >/dev/null 2>&1 ;
 }
 
 
@@ -551,7 +532,7 @@ apply_script_to_srt_subtitles() {  # input_pathname  output_pathname
 
   if [ "${L_SKIP_OPTION}" = 'y' ] ; then
     echo 'SKIPPING SED EDITS ON SRT SUBTITLE' ;
-    /bin/cp "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
+    ${CP} "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
     return ;
   fi
 
@@ -659,11 +640,7 @@ apply_script_to_srt_subtitles() {  # input_pathname  output_pathname
 
 ###############################################################################
 ###############################################################################
-# SRT subtitles are always converted to ASS subtitles using ffmpeg.
-# This function provides a way to edit those subtitles, if desired.
-#
 # This applies some simple enhancements to the ASS script built by ffmpeg.
-# Usually SRT subtitles are kinda bland and this makes them a little better.
 #
 apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
 
@@ -674,7 +651,7 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
 
   if [ "${L_SKIP_OPTION}" = 'y' ] ; then
     echo 'SKIPPING SED EDITS ON ASS SUBTITLE' ;
-    /bin/cp "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
+    ${CP} "${ASS_SRC}" "${ASS_DST}" ; # Don't use '-p' to preserve this copy
     return ;
   fi
 
@@ -782,13 +759,14 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
 # exec 4<"${G_TMP_FILE}" ;
 # /bin/rm -f "${G_TMP_FILE}" ;
 
+  { # I'm not going to bother adjusting the indent for this block ...
   local ido=0 ;
   local idx=0 ;
 
   while [ "${SED_SCRIPT_ARRAY[$idx]}" != '' ] ; do  # {
 
     (( ido = (idx / 2) + 1 )) ; # A temp for displaying the regex index
-    echo -n "${ATTR_BROWN_BOLD}${ido}${ATTR_OFF}." ;
+    printf "${ATTR_BROWN_BOLD}%.2d${ATTR_OFF}." ${ido} ;
 
     (( ido = idx + 1 )) ;
 
@@ -823,6 +801,14 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
       | ${SED} "--file=${G_TMP_FILE}" \
     > "${ASS_DST}" ;
   echo '.' ;
+    
+    ###########################################################################
+    # This had me going for a bit -- fold counts characters, including the
+    # invisible terminal control codes!  So I had to guesstimate a bit about
+    # the correct width to use.
+  #} | wc
+  } | ${FOLD} --width=320 --spaces \
+    | sed -e 's/^/    /' ;
 }
 
 
@@ -953,6 +939,7 @@ if [ "${G_OPTION_NO_SUBS}" != 'y' ] ; then  # {
           "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass" \
           "${G_SUBTITLE_PATHNAME}" \
           "${G_OPTION_ASS_SCRIPT}" ;
+
   else  # }{
     #############################################################################
     # Check to see if there are subtitles attached to this video.
@@ -981,18 +968,30 @@ if [ "${G_OPTION_NO_SUBS}" != 'y' ] ; then  # {
     #
     ###- original way ${MKVMERGE} -i "${G_IN_FILE}" | grep -iq 'substationalpha' ; RC=$? ;
 
-    ${MKVMERGE} -i -F json "${G_IN_FILE}" \
+    SUBTITLE_TRACK="$(${MKVMERGE} -i -F json "${G_IN_FILE}" \
         | jq '.tracks[]' \
         | jq -r '[.id, .type, .properties.codec_id, .properties.track_name, .properties.language]|@sh' \
-        | grep "'subtitles' 'S_TEXT/ASS'"
-    if [ ${RC} -eq 0 ] ; then  # { OKAY  HERE-HERE
+        | grep "'subtitles' 'S_TEXT/ASS'" \
+        | head -1 \
+        | grep "'subtitles' 'S_TEXT/ASS'")" ; RC=$? ;
+    echo "RC=$RC, '${SUBTITLE_TRACK}'" ;
 
-      vecho "${ATTR_YELLOW_BOLD}  SUBTITLE FOUND IN VIDEO$(tput sgr0) ..." ;
+    if [ ${RC} -eq 0 ] ; then  # { OKAY  HERE-HERE  YYYY
 
-      extract_fonts_in_video "${G_IN_FILE}" "${C_FONTS_DIR}" ;
+      vecho "${ATTR_YELLOW_BOLD}  SUBSTATION ALPHA SUBTITLE FOUND IN VIDEO$(tput sgr0) ..." ;
 
-      extract_video_subtitle "${G_IN_FILE}" \
-          "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass"
+      extract_subtitle_track "${G_IN_FILE}" \
+          "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass" \
+          "${SUBTITLE_TRACK}" ;
+
+      G_SUBTITLE_PATHNAME="${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ;
+      apply_script_to_ass_subtitles \
+          "${G_OPTION_NO_MODIFY_ASS}" \
+          "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass" \
+          "${G_SUBTITLE_PATHNAME}" \
+          "${G_OPTION_ASS_SCRIPT}" ;
+
+      extract_font_attachments "${G_IN_FILE}" "${C_FONTS_DIR}" ;
     fi  # }
   fi  # }
 else  # }{
