@@ -150,6 +150,12 @@ trap 'exit_handler' EXIT ;
 #  - grep, egrep
 #  - jq  (developed and tested with version 1.6)
 #  - dos2unix
+###############################################################################
+#  - bash shell - unless you're going with a really old distro, the version of
+#                 bash installed is probably modern enough for this script.
+#                 No special advanced bash features are intentionally used in
+#                 this script (except for array append, but that 1st appeared
+#                 in 3.1x or thereabouts).  This script uses bash-5.1.0.
 #
 MY_SCRIPT="`basename \"$0\"`" ;
 DBG='.' ;
@@ -159,6 +165,7 @@ FFMPEG='ffmpeg -y -nostdin -hide_banner' ;
 MKVMERGE='/usr/bin/mkvmerge' ;
 MKVEXTRACT='/usr/bin/mkvextract' ;
 DOS2UNIX='/bin/dos2unix --force' ;
+GREP='/usr/bin/grep' ;
 SED='/usr/bin/sed' ;
 CP='/usr/bin/cp' ;
 FOLD='/usr/bin/fold' ;
@@ -171,8 +178,8 @@ C_SCRIPT_NAME="$(basename "$0" '.sh')" ;
 # (e.g. my TV can't playback FLAC audio or h265 video streams).
 #
 C_FFMPEG_CRF=20 ;
-C_FFMPEG_PRESET='veryslow' ;    # Good quality w/good compression
 C_FFMPEG_PRESET='veryfast' ;    # Fast, used for batch script testing
+C_FFMPEG_PRESET='veryslow' ;    # Good quality w/good compression
 C_FFMPEG_MP3_BITS=320 ;         # We'll convert the audio track to MP3
 C_SUBTITLE_OUT_DIR='./SUBs' ;   # Where to save the extracted subtitle
 C_FONTS_DIR="${HOME}/.fonts" ;  # Where to save the font attachments
@@ -677,9 +684,9 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
   # think I've handled the ones I'm aware.  There might still be cases that
   # I missed (most probably), but I think this is pretty robust as it stands.
   #
-  SED_SCRIPT_ARRAY=(
-    '^Format: Name,.*'
-      'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding'
+  SED_SCRIPT_ARRAY=( # HERE-HERE
+#   '^Format: Name,.*'
+#     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding'
 
     ###########################################################################
     # Here are a few common ‘Default’ ASS subtitle styles ...
@@ -750,7 +757,7 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
      'Style: Overlap/Flashback,Open Sans Semibold,28,&H45F2E6F2,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2.2,0,2,20,20,11,1'
 
     '^Style: Narration,.*'
-     '^Style: Narration,Open Sans Semibold,28,&H38F0F0F0,&H000000FF,&H00000000,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,20,20,11,1'
+     'Style: Narration,Roboto Medium,27,&H38F0F0F0,&H000000FF,&H00000000,&H00000000,0,-1,0,0,100,100,0,0,1,2.2,0,8,20,20,11,1'
   ) ;
 
   # https://unix.stackexchange.com/questions/181937/how-create-a-temporary-file-in-shell-script
@@ -759,7 +766,7 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
 # exec 4<"${G_TMP_FILE}" ;
 # /bin/rm -f "${G_TMP_FILE}" ;
 
-  { # I'm not going to bother adjusting the indent for this block ...
+  { # (I'm not going to bother adjusting the indent for this block ...)
   local ido=0 ;
   local idx=0 ;
 
@@ -768,25 +775,33 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
     (( ido = (idx / 2) + 1 )) ; # A temp for displaying the regex index
     printf "${ATTR_BROWN_BOLD}%.2d${ATTR_OFF}." ${ido} ;
 
-    (( ido = idx + 1 )) ;
-
       #########################################################################
       # Insane shell escape sequences - also, the sed '-e' ordering is
       # important.  This is because some .ASS directives are preceeded by a
-      # '\', e.g. {\pos(13,80)}.  Also, regex captures are complicated to code
-      # -- I ended up using '%%%' to represent the '\' character.
+      # '\', e.g. {\pos(13,80)}.  Note, regex captures are complicated to code
+      # -- I ended up using '%%%' to represent the '\' character to simplify
+      # the scripting.
       #
-    echo -n '.' ;
-    REPLACEMENT_STR=`echo "${SED_SCRIPT_ARRAY[$ido]}" \
-                | ${SED} -e 's#\\\#\\\\\\\#g'   \
-                       -e 's/,&H/,\\\\\&H/g'  \
-                       -e 's/ <==> /\\\\n/g'  \
-                       -e 's/%%%/\\\/g'
+    ${GREP} --text -q "${SED_SCRIPT_ARRAY[$idx]}" "${ASS_SRC}" ; RC=$? ;
+    if [ ${RC} -eq 0 ] ; then  # {
+      echo -n "${ATTR_GREEN_BOLD}." ;
+      (( ido = idx + 1 )) ;
+      REPLACEMENT_STR=`echo "${SED_SCRIPT_ARRAY[$ido]}" \
+          | ${SED} -e 's#\\\#\\\\\\\#g'   \
+                   -e 's/,&H/,\\\\\&H/g'  \
+                   -e 's/ <==> /\\\\n/g'  \
+                   -e 's/%%%/\\\/g'
                  `;
-    echo -n '. ' ;
+      echo -n '! ' ;
 
-    echo "s#${SED_SCRIPT_ARRAY[$idx]}#${REPLACEMENT_STR}#" \
-      >> "${G_TMP_FILE}" ;
+      echo "s#${SED_SCRIPT_ARRAY[$idx]}#${REPLACEMENT_STR}#" \
+        >> "${G_TMP_FILE}" ;
+
+    else  # }{  Yeah, I know I made this way too fancy ...
+      echo -n "${ATTR_YELLOW_BOLD}.. " ;
+    fi  # }
+    echo -n "${ATTR_OFF}" ;
+
     (( idx += 2 )) ;
   done  # }
 
@@ -795,19 +810,23 @@ apply_script_to_ass_subtitles() {  # input_pathname  output_pathname
   # need to be redone because of the syntax difference between the two modes.
   # It just might be better to include another sed script here instead.
   #
+  # Note, sometimes we may generate an EMPTY script -- it's okay, we'll run
+  # sed anyway since it's just easier to do and no error results ...
+  #
   echo -n 'DOS..'
   cat "${ASS_SRC}"  \
       | ${DOS2UNIX} \
       | ${SED} "--file=${G_TMP_FILE}" \
     > "${ASS_DST}" ;
-  echo '.' ;
+  echo ".${ATTR_OFF}" ;
     
     ###########################################################################
-    # This had me going for a bit -- fold counts characters, including the
-    # invisible terminal control codes!  So I had to guesstimate a bit about
-    # the correct width to use.
-  #} | wc
-  } | ${FOLD} --width=320 --spaces \
+    # This had me going for a bit -- fold seems to count all characters,
+    # including the invisible terminal control codes!  So I had to guesstimate
+    # a bit about the correct width to use.  It's a hack to keep the display
+    # width to about 76 __visible__ columns ...
+    #
+  } | ${FOLD} --width=360 --spaces \
     | sed -e 's/^/    /' ;
 }
 
@@ -933,12 +952,24 @@ if [ "${G_OPTION_NO_SUBS}" != 'y' ] ; then  # {
     #      G_OPTION_NO_MODIFY_ASS switch.  It will be similar to the SRT
     #      script, except w/o the italics (maybe just 'Default' style only?).
     #
-    echo "FOUND AN ASS SUBTITLE, SEE IF IT's NEWER" ; # TODO HERE HERE
+    # echo "FOUND AN ASS SUBTITLE, SEE IF IT's NEWER" ; # TODO HERE HERE
+    echo -n "  ${ATTR_BLUE_BOLD}FOUND EXISTING ASS SUBTITLE$(tput sgr0), " ;
+
+    G_SUBTITLE_PATHNAME="${C_SUBTITLE_OUT_DIR}/${G_IN_BASENAME}.ass" ;
+
+    if [ "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass" \
+     -nt "${G_SUBTITLE_PATHNAME}" ] ; then  # {
+
+      echo "${ATTR_GREEN}UPDATING ..." ;
       apply_script_to_ass_subtitles \
           "${G_OPTION_NO_MODIFY_ASS}" \
           "${C_SUBTITLE_IN_DIR}/${G_IN_BASENAME}.ass" \
           "${G_SUBTITLE_PATHNAME}" \
           "${G_OPTION_ASS_SCRIPT}" ;
+    else  # }{
+      echo "${ATTR_GREEN}ALREADY UP-TO-DATE ..." ;
+    fi  # }
+    tput sgr0 ;
 
   else  # }{
     #############################################################################
@@ -1054,16 +1085,17 @@ HERE_DOC
   fi
 
   set -x ; # We want to KEEP this enabled.
-  ${DBG} ${FFMPEG} -i "${G_IN_FILE}" \
-                   -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K \
-                   -c:v libx264 -preset ${C_FFMPEG_PRESET} \
-                   -crf ${C_FFMPEG_CRF} \
-                   -tune film -profile:v high -level 4.1 -pix_fmt yuv420p \
-                   "$@" \
-                   -metadata "title=${G_METADATA_TITLE}" \
-                   -metadata "genre=${C_METADATA_GENRE}" \
-                   -metadata "comment=${C_METADATA_COMMENT}" \
-                   "file:${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ;
+  ${FFMPEG} -i "${G_IN_FILE}" \
+            -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K \
+            -c:v libx264 -preset ${C_FFMPEG_PRESET} \
+            -crf ${C_FFMPEG_CRF} \
+            -tune film -profile:v high -level 4.1 -pix_fmt yuv420p \
+            "$@" \
+            -metadata "title=${G_METADATA_TITLE}" \
+            -metadata "genre=${C_METADATA_GENRE}" \
+            -metadata "comment=${C_METADATA_COMMENT}" \
+            "file:${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ;
+
   { set +x ; } >/dev/null 2>&1
 else
   echo "$(tput setaf 3 ; tput bold)COMPLETED$(tput sgr0; tput bold) '${G_IN_FILE}'$(tput sgr0) ..." ;
