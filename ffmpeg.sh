@@ -411,6 +411,22 @@ fi
 
 ###############################################################################
 ###############################################################################
+#
+get_video_title() {
+  local in_title="$1" ; shift ;
+  local in_video_basename="$1" ; shift ;
+
+  local out_title="${in_title}" ;
+  if [ "${in_title}" = '' ] ; then
+    out_title="$(echo "${in_video_basename}" | ${SED} -e 's/[_+]/ /g')" ;
+  fi
+
+  echo "${out_title}" ;
+}
+
+
+###############################################################################
+###############################################################################
 #   ######
 #   #       ####   #    #   #####   ####
 #   #      #    #  ##   #     #    #
@@ -1086,9 +1102,7 @@ fi  # }
 #
 if [ ! -s "${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ] ; then  # {
 
-  if [ "${G_METADATA_TITLE}" = '' ] ; then
-    G_METADATA_TITLE="$(echo "${G_IN_BASENAME}" | ${SED} -e 's/[_+]/ /g')" ;
-  fi
+  G_METADATA_TITLE="$(get_video_title "${G_METADATA_TITLE}" "${G_IN_BASENAME}")" ;
 
   #############################################################################
   # If the comment isn't set, then build a default comment.
