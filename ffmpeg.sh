@@ -32,12 +32,16 @@ fi
 # NOTE + TODO:
 # - option to copy the audio track instead of re-encoding it as MP3
 # - option to copy the video track instead of re-encoding it, or re-encode
-#   the video track as something different.  For some reason, some recodes
+#   the video track as something different.  For some reason, some re-encodes
 #   don't play well on the Samsung but I can't see the different in VLC, e.g.
 #   "/avm1/NO_RSYNC/MVs/3 Doors Down - It's Not My Time (CrawDad).mpg".
 #
 # https://askubuntu.com/questions/366103/saving-more-corsor-positions-with-tput-in-bash-terminal
 #   Interesting way to capture the cursor position.
+# https://unix.stackexchange.com/questions/88490/how-do-you-use-output-redirection-in-combination-with-here-documents-and-cat
+#
+# ls ; read MKV_FILE ; mkvmerge -i -F json "${MKV_FILE}" | jq '.container' | jq -r '[.properties.title]|@sh' ;
+# ls * | while read MKV_FILE ; do echo -n "${MKV_FILE} -> " ; mkvmerge -i -F json "${MKV_FILE}" | jq '.container' | jq -r '[.properties.title]|@sh' ; done
 #
 
 
@@ -150,12 +154,15 @@ trap 'exit_handler' EXIT ;
 #  - grep, egrep
 #  - jq  (developed and tested with version 1.6)
 #  - dos2unix
-###############################################################################
 #  - bash shell - unless you're going with a really old distro, the version of
 #                 bash installed is probably modern enough for this script.
 #                 No special advanced bash features are intentionally used in
 #                 this script (except for array append, but that 1st appeared
 #                 in 3.1x or thereabouts).  This script uses bash-5.1.0.
+#  - exiftool   - not used in this script, but mentioned if you want to view
+#                 the video's metadata (either before/after the re-encoding).
+#                 exiftool is a perl script, so (obviously) perl needs to be
+#                 installed along with any additional supporting libraries.
 #
 MY_SCRIPT="`basename \"$0\"`" ;
 DBG='.' ;
@@ -196,6 +203,11 @@ G_OPTION_VERBOSE='' ;           # set to 'y' if '--verbose' is specified to
                                 # display a little bit more status of the run
 G_OPTION_DEBUG='' ;             # set to 'y' if '--debug' is specified to
                                 # preserve some temporary files, etc.
+G_OPTION_NO_METADATA='' ;       # Do NOT add any metadata in the re-encoding
+                                # process.  This script typically adds: title,
+                                # genre, and comment metadata fields to the
+                                # video.
+
 C_VIDEO_OUT_DIR='OUT DIR' ;     # the re-encoded video's save location
 C_SUBTITLE_IN_DIR='IN SUBs' ;   # location for manually added subtitles
 
@@ -210,6 +222,8 @@ declare -a SED_SCRIPT_ARRAY=();
   #   “synopsis”, “show”, “episode_id”, “network”, and “lyrics”.
   # It was straightforward to automate “title” and “genre” in this script, but
   # other tags could be added through some clever scripting automation as well.
+  #
+  # exiftool seems to provide the most comprehensive view of a file's metadata.
   #
   # The VLC media player can show a video's metadata with some of the more
   # common tags displayed in the "Current Media Information" dialogue window.
@@ -315,6 +329,7 @@ HS_OPTIONS=`getopt -o h::vc:f:yt:q: \
     --long help::,verbose,config:,fonts-dir:,copy-to:,quality:,\
 debug,\
 no-subs,\
+no-metadata,\
 no-modify-srt \
     -n "${ATTR_ERROR} ${ATTR_BLUE_BOLD}${MY_SCRIPT}${ATTR_YELLOW}" -- "$@"` ;
 
@@ -341,6 +356,9 @@ while true ; do  # {
 #   ;;
   --debug)
     G_OPTION_DEBUG='y' ; shift ;
+    ;;
+  --no-metadata)
+    G_OPTION_NO_METADATA='y' ; shift ;
     ;;
   -v|--verbose)
     G_OPTION_VERBOSE='y' ; shift ;
@@ -1033,7 +1051,7 @@ fi  # }
 ###############################################################################
 # Welcome to the wonderful world of shell escape!  Pretty sure no personal
 # info will be added to the video's comments, and you can easily verify that
-# the comment is what you expected using VLC.
+# the comment is what you expected using VLC's Tools => Media Information.
 #
 # There might be a cleaner/cleverer way to do this, but darn if I know how to!
 #
@@ -1066,7 +1084,7 @@ fi  # }
 
 ###############################################################################
 #
-if [ ! -s "${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ] ; then
+if [ ! -s "${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ] ; then  # {
 
   if [ "${G_METADATA_TITLE}" = '' ] ; then
     G_METADATA_TITLE="$(echo "${G_IN_BASENAME}" | ${SED} -e 's/[_+]/ /g')" ;
@@ -1075,31 +1093,50 @@ if [ ! -s "${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ] ; then
   #############################################################################
   # If the comment isn't set, then build a default comment.
   #
-  if [ "${C_METADATA_COMMENT}" = '' ] ; then
-    C_METADATA_COMMENT="`cat <<HERE_DOC
+  C_VIDEO_COMMENT='' ;
+  if [ "${C_METADATA_COMMENT}" = '' ] ; then  # {
+    C_VIDEO_COMMENT="`cat <<HERE_DOC
 Encoded on $(date)
 $(uname -sr ; ffmpeg -version | egrep '^ffmpeg ')
 ${FFMPEG} -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K -c:v libx264 -preset ${C_FFMPEG_PRESET} -crf ${C_FFMPEG_CRF} -tune film -profile:v high -level 4.1 -pix_fmt yuv420p $(echo $@ | ${SED} -e 's/[\\]//g' -e "s#${HOME}#\\\${HOME}#g") '${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}'
 HERE_DOC
 `" ;
-  fi
+  else  # }{
+    echo 'FIXME' ;
+  fi  # }
 
-  set -x ; # We want to KEEP this enabled.
-  ${FFMPEG} -i "${G_IN_FILE}" \
-            -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K \
-            -c:v libx264 -preset ${C_FFMPEG_PRESET} \
-            -crf ${C_FFMPEG_CRF} \
-            -tune film -profile:v high -level 4.1 -pix_fmt yuv420p \
-            "$@" \
-            -metadata "title=${G_METADATA_TITLE}" \
-            -metadata "genre=${C_METADATA_GENRE}" \
-            -metadata "comment=${C_METADATA_COMMENT}" \
-            "file:${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ;
+  #         -metadata "comment=${C_VIDEO_COMMENT}" \
+  RC=0 ;
+  if [ "${G_OPTION_NO_METADATA}" = 'y' ] ; then  # {
+    set -x ; # We want to KEEP this enabled.
+    ${FFMPEG} -i "${G_IN_FILE}" \
+              -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K \
+              -c:v libx264 -preset ${C_FFMPEG_PRESET} \
+              -crf ${C_FFMPEG_CRF} \
+              -tune film -profile:v high -level 4.1 -pix_fmt yuv420p \
+              "$@" \
+              "file:${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ;
+    { RC=$? ; set +x ; } >/dev/null 2>&1
+  else  # }{
+    set -x ; # We want to KEEP this enabled.
+    ${FFMPEG} -i "${G_IN_FILE}" \
+              -c:a libmp3lame -ab ${C_FFMPEG_MP3_BITS}K \
+              -c:v libx264 -preset ${C_FFMPEG_PRESET} \
+              -crf ${C_FFMPEG_CRF} \
+              -tune film -profile:v high -level 4.1 -pix_fmt yuv420p \
+              "$@" \
+              -metadata "title=${G_METADATA_TITLE}" \
+              -metadata "genre=${C_METADATA_GENRE}" \
+              -metadata "comment=${C_VIDEO_COMMENT}" \
+              "file:${C_VIDEO_OUT_DIR}/${G_IN_BASENAME}.${C_OUTPUT_CONTAINER}" ;
+    { RC=$? ; set +x ; } >/dev/null 2>&1
+  fi  # }
 
-  { set +x ; } >/dev/null 2>&1
-else
+else  # }{
+
   echo "$(tput setaf 3 ; tput bold)COMPLETED$(tput sgr0; tput bold) '${G_IN_FILE}'$(tput sgr0) ..." ;
-fi
+  RC=0 ;
+fi  # }
 
-exit 0 ; # TODO :: should return ffmpeg's return code instead
+exit ${RC} ;
 
